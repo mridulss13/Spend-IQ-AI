@@ -34,7 +34,7 @@ export async function generateInsightAnswer(question: string): Promise<string> {
       amount: expense.amount,
       category: expense.category || 'Other',
       description: expense.text,
-      date: expense.createdAt.toISOString(),
+      date: expense.date.toISOString(),
     }));
 
     // Generate AI answer

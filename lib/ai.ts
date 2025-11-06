@@ -1,20 +1,7 @@
-import OpenAI from 'openai';
+import Groq from "groq-sdk";
 
-interface RawInsight {
-  type?: string;
-  title?: string;
-  message?: string;
-  action?: string;
-  confidence?: number;
-}
-
-const openai = new OpenAI({
-  baseURL: 'https://openrouter.ai/api/v1',
-  apiKey: process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY,
-  defaultHeaders: {
-    'HTTP-Referer': process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
-    'X-Title': 'ExpenseTracker AI',
-  },
+const groq = new Groq({
+  apiKey: process.env.GROQ_API_KEY!,
 });
 
 export interface ExpenseRecord {
@@ -27,7 +14,7 @@ export interface ExpenseRecord {
 
 export interface AIInsight {
   id: string;
-  type: 'warning' | 'info' | 'success' | 'tip';
+  type: "warning" | "info" | "success" | "tip";
   title: string;
   message: string;
   action?: string;
@@ -38,97 +25,81 @@ export async function generateExpenseInsights(
   expenses: ExpenseRecord[]
 ): Promise<AIInsight[]> {
   try {
-    // Prepare expense data for AI analysis
-    const expensesSummary = expenses.map((expense) => ({
-      amount: expense.amount,
-      category: expense.category,
-      description: expense.description,
-      date: expense.date,
-    }));
-
-    const prompt = `Analyze the following expense data and provide 3-4 actionable financial insights. 
-    Return a JSON array of insights with this structure:
-    {
-      "type": "warning|info|success|tip",
-      "title": "Brief title",
-      "message": "Detailed insight message with specific numbers when possible",
-      "action": "Actionable suggestion",
-      "confidence": 0.8
-    }
-
-    Expense Data:
-    ${JSON.stringify(expensesSummary, null, 2)}
-
-    Focus on:
-    1. Spending patterns (day of week, categories)
-    2. Budget alerts (high spending areas)
-    3. Money-saving opportunities
-    4. Positive reinforcement for good habits
-
-    Return only valid JSON array, no additional text.`;
-
-    const completion = await openai.chat.completions.create({
-      model: 'deepseek/deepseek-chat-v3-0324:free',
-      messages: [
-        {
-          role: 'system',
-          content:
-            'You are a financial advisor AI that analyzes spending patterns and provides actionable insights. Always respond with valid JSON only.',
-        },
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ],
-      temperature: 0.7,
-      max_tokens: 1000,
+    // Calculate summary statistics
+    const totalAmount = expenses.reduce((sum, e) => sum + e.amount, 0);
+    const categoryTotals: Record<string, number> = {};
+    const categoryCounts: Record<string, number> = {};
+    
+    expenses.forEach((expense) => {
+      categoryTotals[expense.category] = (categoryTotals[expense.category] || 0) + expense.amount;
+      categoryCounts[expense.category] = (categoryCounts[expense.category] || 0) + 1;
     });
 
-    const response = completion.choices[0].message.content;
-    if (!response) {
-      throw new Error('No response from AI');
-    }
+    // Group by date to find spending patterns
+    const dateGroups: Record<string, number> = {};
+    expenses.forEach((expense) => {
+      const date = expense.date.split('T')[0];
+      dateGroups[date] = (dateGroups[date] || 0) + expense.amount;
+    });
 
-    // Clean the response by removing markdown code blocks if present
-    let cleanedResponse = response.trim();
-    if (cleanedResponse.startsWith('```json')) {
-      cleanedResponse = cleanedResponse
-        .replace(/^```json\s*/, '')
-        .replace(/\s*```$/, '');
-    } else if (cleanedResponse.startsWith('```')) {
-      cleanedResponse = cleanedResponse
-        .replace(/^```\s*/, '')
-        .replace(/\s*```$/, '');
-    }
+    const summary = {
+      totalAmount,
+      categoryTotals,
+      categoryCounts,
+      totalExpenses: expenses.length,
+      dateGroups,
+      expenses: expenses.map(({ amount, category, description, date }) => ({
+        amount,
+        category,
+        description,
+        date: date.split('T')[0],
+      })),
+    };
 
-    // Parse AI response
-    const insights = JSON.parse(cleanedResponse);
+    const completion = await groq.chat.completions.create({
+      model: "llama-3.1-8b-instant",
+      messages: [
+        {
+          role: "system",
+          content: `You are a financial AI analyst. Analyze expense data and return ONLY a valid JSON array of 3-4 insights. Each insight must have:
+- type: "warning" (for high spending alerts), "success" (for positive patterns), "tip" (for savings opportunities), or "info" (for general information)
+- title: A concise, actionable title (e.g., "High Transportation Costs", "Potential Savings on Food")
+- message: A detailed summary with specific amounts, timeframes, and categories (e.g., "You spent $183 on Transportation in the last 4 days, with $133 on gas alone.")
+- action: A specific, actionable suggestion (e.g., "Consider carpooling, public transport, or fuel-efficient routes to reduce gas expenses.")
+- confidence: A number between 0.5 and 1.0
 
-    // Add IDs and ensure proper format
-    const formattedInsights = insights.map(
-      (insight: RawInsight, index: number) => ({
-        id: `ai-${Date.now()}-${index}`,
-        type: insight.type || 'info',
-        title: insight.title || 'AI Insight',
-        message: insight.message || 'Analysis complete',
-        action: insight.action,
-        confidence: insight.confidence || 0.8,
-      })
-    );
+Return ONLY the JSON array, no markdown, no code blocks, no explanation.`,
+        },
+        {
+          role: "user",
+          content: `Analyze this expense data and generate financial insights:\n${JSON.stringify(summary, null, 2)}`,
+        },
+      ],
+      temperature: 0.5,
+      max_tokens: 1200,
+    });
 
-    return formattedInsights;
-  } catch (error) {
-    console.error('❌ Error generating AI insights:', error);
+    const content = completion.choices[0].message.content?.trim() || '[]';
+    // Remove markdown code blocks if present
+    const cleanedContent = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    const json = JSON.parse(cleanedContent);
 
-    // Fallback to mock insights if AI fails
+    return json.map((item: any, i: number) => ({
+      id: `ai-${Date.now()}-${i}`,
+      type: item.type ?? "info",
+      title: item.title ?? "Insight",
+      message: item.message ?? "",
+      action: item.action ?? "",
+      confidence: item.confidence ?? 0.8,
+    }));
+  } catch (err) {
+    console.error("AI Insight Error:", err);
     return [
       {
-        id: 'fallback-1',
-        type: 'info',
-        title: 'AI Analysis Unavailable',
-        message:
-          'Unable to generate personalized insights at this time. Please try again later.',
-        action: 'Refresh insights',
+        id: "fallback",
+        type: "info",
+        title: "AI Unavailable",
+        message: "Try again later.",
         confidence: 0.5,
       },
     ];
@@ -137,42 +108,35 @@ export async function generateExpenseInsights(
 
 export async function categorizeExpense(description: string): Promise<string> {
   try {
-    const completion = await openai.chat.completions.create({
-      model: 'deepseek/deepseek-chat-v3-0324:free',
+    const completion = await groq.chat.completions.create({
+      model: "llama-3.1-8b-instant",
       messages: [
         {
-          role: 'system',
+          role: "system",
           content:
-            'You are an expense categorization AI. Categorize expenses into one of these categories: Food, Transportation, Entertainment, Shopping, Bills, Healthcare, Other. Respond with only the category name.',
+            "Return only one category: Food, Transportation, Entertainment, Shopping, Bills, Healthcare, Other.",
         },
-        {
-          role: 'user',
-          content: `Categorize this expense: "${description}"`,
-        },
+        { role: "user", content: description },
       ],
-      temperature: 0.1,
-      max_tokens: 20,
+      temperature: 0,
+      max_tokens: 8,
     });
 
     const category = completion.choices[0].message.content?.trim();
-
-    const validCategories = [
-      'Food',
-      'Transportation',
-      'Entertainment',
-      'Shopping',
-      'Bills',
-      'Healthcare',
-      'Other',
+    const valid = [
+      "Food",
+      "Transportation",
+      "Entertainment",
+      "Shopping",
+      "Bills",
+      "Healthcare",
+      "Other",
     ];
 
-    const finalCategory = validCategories.includes(category || '')
-      ? category!
-      : 'Other';
-    return finalCategory;
-  } catch (error) {
-    console.error('❌ Error categorizing expense:', error);
-    return 'Other';
+    return valid.includes(category ?? "") ? category! : "Other";
+  } catch (err) {
+    console.error("Categorize Error:", err);
+    return "Other";
   }
 }
 
@@ -181,51 +145,62 @@ export async function generateAIAnswer(
   context: ExpenseRecord[]
 ): Promise<string> {
   try {
-    const expensesSummary = context.map((expense) => ({
-      amount: expense.amount,
-      category: expense.category,
-      description: expense.description,
-      date: expense.date,
-    }));
-
-    const prompt = `Based on the following expense data, provide a detailed and actionable answer to this question: "${question}"
-
-    Expense Data:
-    ${JSON.stringify(expensesSummary, null, 2)}
-
-    Provide a comprehensive answer that:
-    1. Addresses the specific question directly
-    2. Uses concrete data from the expenses when possible
-    3. Offers actionable advice
-    4. Keeps the response concise but informative (2-3 sentences)
+    // Calculate summary statistics for better context
+    const totalAmount = context.reduce((sum, e) => sum + e.amount, 0);
+    const categoryTotals: Record<string, number> = {};
     
-    Return only the answer text, no additional formatting.`;
-
-    const completion = await openai.chat.completions.create({
-      model: 'deepseek/deepseek-chat-v3-0324:free',
-      messages: [
-        {
-          role: 'system',
-          content:
-            'You are a helpful financial advisor AI that provides specific, actionable answers based on expense data. Be concise but thorough.',
-        },
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ],
-      temperature: 0.7,
-      max_tokens: 200,
+    context.forEach((expense) => {
+      categoryTotals[expense.category] = (categoryTotals[expense.category] || 0) + expense.amount;
     });
 
-    const response = completion.choices[0].message.content;
-    if (!response) {
-      throw new Error('No response from AI');
+    const summary = {
+      totalAmount,
+      categoryTotals,
+      totalExpenses: context.length,
+      expenses: context.map(({ amount, category, description, date }) => ({
+        amount,
+        category,
+        description,
+        date: date.split('T')[0],
+      })),
+    };
+
+    const completion = await groq.chat.completions.create({
+      model: "llama-3.1-8b-instant",
+      messages: [
+        { 
+          role: "system", 
+          content: "You are a financial advisor. Write a concise paragraph (maximum 6-7 lines) with actionable advice. Use paragraph format only - NO numbered lists, NO bullet points, NO markdown formatting, NO bold text, NO headings. Write in flowing sentences. Include specific amounts and timeframes when relevant. Be direct and practical." 
+        },
+        {
+          role: "user",
+          content: `Expense Data: ${JSON.stringify(summary, null, 2)}\n\nQuestion/Insight: ${question}\n\nProvide a concise paragraph analysis (6-7 lines maximum) with specific recommendations and potential savings. Write in paragraph format only - no lists, no bullets, no formatting.`,
+        },
+      ],
+      temperature: 0.6,
+      max_tokens: 150,
+    });
+
+    let answer = completion.choices[0].message.content?.trim() ?? "No answer available.";
+    
+    // Clean up any markdown formatting that might have been added
+    answer = answer
+      .replace(/\*\*/g, '') // Remove bold markers
+      .replace(/#{1,6}\s/g, '') // Remove markdown headers
+      .replace(/^\d+\.\s/gm, '') // Remove numbered list markers at start of lines
+      .replace(/^[-*+]\s/gm, '') // Remove bullet points
+      .replace(/\n{2,}/g, '\n') // Replace multiple newlines with single
+      .trim();
+    
+    // Limit to approximately 6-7 lines (roughly 500 characters)
+    const lines = answer.split('\n');
+    if (lines.length > 7) {
+      answer = lines.slice(0, 7).join(' ').trim();
     }
 
-    return response.trim();
-  } catch (error) {
-    console.error('❌ Error generating AI answer:', error);
-    return "I'm unable to provide a detailed answer at the moment. Please try refreshing the insights or check your connection.";
+    return answer;
+  } catch (err) {
+    console.error("Q&A Error:", err);
+    return "Unable to process right now.";
   }
 }

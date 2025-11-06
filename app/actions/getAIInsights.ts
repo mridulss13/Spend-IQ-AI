@@ -2,9 +2,13 @@
 
 import { checkUser } from '@/lib/checkUser';
 import { db } from '@/lib/db';
-import { generateExpenseInsights, AIInsight, ExpenseRecord } from '@/lib/ai';
+import { generateExpenseInsights, generateAIAnswer, AIInsight, ExpenseRecord } from '@/lib/ai';
 
-export async function getAIInsights(): Promise<AIInsight[]> {
+export interface InsightWithAnswer extends AIInsight {
+  aiAnswer?: string;
+}
+
+export async function getAIInsights(): Promise<InsightWithAnswer[]> {
   try {
     const user = await checkUser();
     if (!user) {
@@ -27,6 +31,15 @@ export async function getAIInsights(): Promise<AIInsight[]> {
       },
       take: 50, // Limit to recent 50 expenses for analysis
     });
+
+    // Convert to format expected by AI
+    const expenseData: ExpenseRecord[] = expenses.map((expense) => ({
+      id: expense.id,
+      amount: expense.amount,
+      category: expense.category || 'Other',
+      description: expense.text,
+      date: expense.date.toISOString(),
+    }));
 
     if (expenses.length === 0) {
       // Return default insights for new users
@@ -52,18 +65,27 @@ export async function getAIInsights(): Promise<AIInsight[]> {
       ];
     }
 
-    // Convert to format expected by AI
-    const expenseData: ExpenseRecord[] = expenses.map((expense) => ({
-      id: expense.id,
-      amount: expense.amount,
-      category: expense.category || 'Other',
-      description: expense.text,
-      date: expense.createdAt.toISOString(),
-    }));
-
     // Generate AI insights
     const insights = await generateExpenseInsights(expenseData);
-    return insights;
+    
+    // Generate AI answers for each insight
+    const insightsWithAnswers = await Promise.all(
+      insights.map(async (insight) => {
+        try {
+          const question = `${insight.title}: ${insight.message} ${insight.action ? insight.action : ''}`;
+          const aiAnswer = await generateAIAnswer(question, expenseData);
+          return {
+            ...insight,
+            aiAnswer,
+          };
+        } catch (error) {
+          console.error(`Error generating answer for insight ${insight.id}:`, error);
+          return insight;
+        }
+      })
+    );
+
+    return insightsWithAnswers;
   } catch (error) {
     console.error('Error getting AI insights:', error);
 
