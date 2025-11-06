@@ -21,6 +21,14 @@ export interface AIInsight {
   confidence: number;
 }
 
+interface AIInsightResponse {
+  type?: "warning" | "info" | "success" | "tip";
+  title?: string;
+  message?: string;
+  action?: string;
+  confidence?: number;
+}
+
 export async function generateExpenseInsights(
   expenses: ExpenseRecord[]
 ): Promise<AIInsight[]> {
@@ -82,9 +90,9 @@ Return ONLY the JSON array, no markdown, no code blocks, no explanation.`,
     const content = completion.choices[0].message.content?.trim() || '[]';
     // Remove markdown code blocks if present
     const cleanedContent = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    const json = JSON.parse(cleanedContent);
+    const json = JSON.parse(cleanedContent) as AIInsightResponse[];
 
-    return json.map((item: any, i: number) => ({
+    return json.map((item: AIInsightResponse, i: number) => ({
       id: `ai-${Date.now()}-${i}`,
       type: item.type ?? "info",
       title: item.title ?? "Insight",
