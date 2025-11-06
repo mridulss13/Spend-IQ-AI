@@ -1,4 +1,5 @@
 import { SignInButton } from '@clerk/nextjs';
+import Link from 'next/link';
 
 const Guest = () => {
   return (
@@ -34,9 +35,12 @@ const Guest = () => {
                 <div className='absolute inset-0 bg-gradient-to-r from-white/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200'></div>
               </button>
             </SignInButton>
-            <button className='group border-2 border-emerald-500/20 dark:border-emerald-400/20 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 px-6 sm:px-8 py-3 sm:py-4 rounded-xl sm:rounded-2xl font-semibold transition-all duration-200 backdrop-blur-sm'>
+            <Link
+              href='/contact'
+              className='group border-2 border-emerald-500/20 dark:border-emerald-400/20 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 px-6 sm:px-8 py-3 sm:py-4 rounded-xl sm:rounded-2xl font-semibold transition-all duration-200 backdrop-blur-sm'
+            >
               Learn More
-            </button>
+            </Link>
           </div>
 
           {/* Feature highlights */}
